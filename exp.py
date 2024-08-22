@@ -1,84 +1,91 @@
+import os
 import numpy as np
 from PIL import ImageGrab, Image
 import time
 import pydirectinput
-import imagehash
 import keyboard
-import random
-from collections import deque
 import cv2
+import tilemap  # Assuming you have a tilemap module
+from collections import deque
 
-class TileMap:
-    def __init__(self, width, height):
-        self.map = np.full((width, height), ' ')  # Initialize an empty map with ' ' as unexplored
-        self.width = width
-        self.height = height
-        self.current_position = (width // 2, height // 2)  # Start at the center
-        self.current_direction = 'left'  # Start facing 'left'
-        self.min_x, self.min_y = self.current_position  # Bounds of explored area
-        self.max_x, self.max_y = self.current_position
+class PokemonExplorer:
+    def __init__(self, bbox, interval=.4, pixel_size=(32, 32), resize_factor=0.25, screenshot_dir='screenshots'):
+        self.bbox = bbox
+        self.interval = interval
+        self.pixel_size = pixel_size
+        self.resize_factor = resize_factor
+        self.screenshot_dir = screenshot_dir
 
-        # Mark the starting position as explored
-        self.map[self.current_position] = '.'
+        # Create the screenshots directory if it doesn't exist
+        os.makedirs(self.screenshot_dir, exist_ok=True)
 
-    def reset(self):
-        self.map = np.full((self.width, self.height), ' ')  # Reset the map
-        self.current_position = (self.width // 2, self.height // 2)  # Reset to the center
-        self.current_direction = 'left'  # Reset facing direction
-        self.min_x, self.min_y = self.current_position  # Reset bounds
-        self.max_x, self.max_y = self.current_position
-        self.map[self.current_position] = '.'  # Mark starting position as explored
+        # List of all tile maps
+        self.tile_maps = [tilemap.TileMap(100, 100)]  # Start with one tile map
+        self.current_direction = 'left'
+        self.current_tile_map_index = 0  # Index of the current tile map
+        self.warp_dict = {}  # Dictionary to map warp points to destination tile maps and coordinates
+        self.prev_image = None  # Store the previous image for SIFT comparison
+        self.screenshot_count = 0  # Counter for the screenshots
 
-    def move(self, direction):
-        x, y = self.current_position
-        if direction == 'up':
-            return (x, y - 1)
-        elif direction == 'down':
-            return (x, y + 1)
-        elif direction == 'left':
-            return (x - 1, y)
-        elif direction == 'right':
-            return (x + 1, y)
+    def capture_screenshot(self):
+        screenshot = ImageGrab.grab(bbox=self.bbox)
+        screenshot = screenshot.resize(
+            (int(screenshot.width * self.resize_factor), int(screenshot.height * self.resize_factor)), Image.BILINEAR
+        )
+        grayscale_screenshot = screenshot.convert('L')
+        screenshot_array = np.array(grayscale_screenshot)
 
-    def mark_wall(self, position):
-        self.map[position] = '#'
-        self.update_bounds(position)
+        # # Save the screenshot
+        # screenshot_path = os.path.join(self.screenshot_dir, f'screenshot_{self.screenshot_count:04d}.png')
+        # grayscale_screenshot.save(screenshot_path)
+        # print(f"Saved screenshot: {screenshot_path}")
+        # self.screenshot_count += 1
 
-    def mark_open(self, position):
-        self.map[position] = '.'
-        self.update_bounds(position)
+        return screenshot_array
 
-    def set_position(self, position):
-        self.current_position = position
-        self.map[position] = '.'  # Mark the AI's current position as open space
-        self.update_bounds(position)
+    def is_black_screen(self, image, threshold=20):
+        # Check if the image is mostly black
+        return np.mean(image) < threshold
 
-    def set_direction(self, direction):
+    def detect_movement_sift(self, image1, image2, min_match=10):
+        sift = cv2.SIFT_create()
+        kps1, des1 = sift.detectAndCompute(image1, None)
+        kps2, des2 = sift.detectAndCompute(image2, None)
+        
+        if des1 is None or des2 is None:
+            return 0, 0
+        
+        flann = cv2.FlannBasedMatcher(dict(algorithm=0, trees=5), dict(checks=50))
+        matches = flann.knnMatch(des1, des2, k=2)
+
+        good_matches = [m for m, n in matches if m.distance < 0.7 * n.distance]
+        
+        if len(good_matches) > min_match:
+            src_pts = np.float32([kps1[m.queryIdx].pt for m in good_matches]).reshape(-1, 1, 2)
+            dst_pts = np.float32([kps2[m.trainIdx].pt for m in good_matches]).reshape(-1, 1, 2)
+
+            M, _ = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)
+
+            shift_x = M[0, 2]
+            shift_y = M[1, 2]
+            return shift_x, shift_y
+
+        return 0, 0
+
+    def press_random_button(self):
+        button = random.choice(['a', 'b'])
+        pydirectinput.press(button)
+
+    def move_direction(self, direction, min_hold_time=0.05, wait_time=0.5):
+        keyboard.press(direction)
+        time.sleep(min_hold_time)
+        keyboard.release(direction)
+        time.sleep(wait_time)
         self.current_direction = direction
 
-    def update_bounds(self, position):
-        x, y = position
-        self.min_x = min(self.min_x, x)
-        self.max_x = max(self.max_x, x)
-        self.min_y = min(self.min_y, y)
-        self.max_x = max(self.max_x, x)
-        self.max_y = max(self.max_y, y)
-
-    def print_map(self):
-        # Temporarily mark the current position as 'X' for printing
-        temp_map = np.copy(self.map)
-        x, y = self.current_position
-        temp_map[x, y] = 'X'
-        
-        print("\nCurrent Map:")
-        for y in range(self.min_y, self.max_y + 1):
-            row = "".join(temp_map[x][y] for x in range(self.min_x, self.max_x + 1))
-            print(row)
-        print()
-
     def find_nearest_unexplored(self):
-        # Use BFS to find the nearest unexplored tile (' ')
-        start = self.current_position
+        # Use BFS to find the nearest unexplored tile (' ') or warp point ('W')
+        start = self.tile_maps[self.current_tile_map_index].current_position
         queue = deque([(start, [])])  # Queue holds tuples of (position, path_to_position)
         visited = set()
 
@@ -88,137 +95,96 @@ class TileMap:
                 continue
             visited.add((x, y))
 
-            if self.map[x, y] == ' ':
+            # Prioritize unexplored tiles first
+            if self.tile_maps[self.current_tile_map_index].map[x, y] == ' ':
                 return path  # Return the path to the nearest unexplored tile
-            directions = ['up', 'left', 'right', 'down']
-            random.shuffle(directions)
-            d = {
+
+            # Consider warp points if no unexplored tiles are found
+            if self.tile_maps[self.current_tile_map_index].map[x, y] == 'W':
+                return path  # Return the path to the nearest warp point
+
+            directions = {
                 'up': (0, -1), 'down': (0, 1), 'left': (-1, 0), 'right': (1, 0)
             }
             # Explore neighbors
-            for direction in directions:
-                new_position = (x + d[direction][0], y + d[direction][1])
-                if 0 <= new_position[0] < self.width and 0 <= new_position[1] < self.height:
-                    if new_position not in visited and self.map[new_position] != '#':
+            for direction, (dx, dy) in directions.items():
+                new_position = (x + dx, y + dy)
+                if 0 <= new_position[0] < self.tile_maps[self.current_tile_map_index].width and 0 <= new_position[1] < self.tile_maps[self.current_tile_map_index].height:
+                    if new_position not in visited and self.tile_maps[self.current_tile_map_index].map[new_position] != '#':
                         queue.append((new_position, path + [direction]))
 
-        return []  # No unexplored tiles found
+        return []  # No unexplored tiles or warp points found
 
-class PokemonExplorer:
-    def __init__(self, bbox, interval=0.4, pixel_size=(32, 32), hash_size=8, hash_threshold=5, resize_factor = .25):
-        self.bbox = bbox
-        self.interval = interval
-        self.pixel_size = pixel_size
-        self.hash_size = hash_size
-        self.hash_threshold = hash_threshold
-        self.tile_map = TileMap(100, 100)  # Create a 100x100 map
-        self.prev_image = None  # Store the previous image for SIFT comparison
-        self.resize_factor = resize_factor
-
-    def capture_screenshot(self):
-        screenshot = ImageGrab.grab(bbox=self.bbox)
-        return screenshot.resize(self.pixel_size, Image.BILINEAR)
-
-    def detect_movement_sift(self, image1, image2, min_match=10):
-        sift = cv2.SIFT_create()
-        
-        # Detect keypoints and compute descriptors
-        kps1, des1 = sift.detectAndCompute(image1, None)
-        kps2, des2 = sift.detectAndCompute(image2, None)
-        
-        # Check if keypoints and descriptors were found in both images
-        if des1 is None or des2 is None:
-            return 0, 0, False  # No keypoints found, so no movement detected
-        
-        # FLANN based matcher
-        index_params = dict(algorithm=0, trees=5)
-        search_params = dict(checks=50)
-        flann = cv2.FlannBasedMatcher(index_params, search_params)
-        matches = flann.knnMatch(des1, des2, k=2)
-        
-        # Store all the good matches as per Lowe's ratio test.
-        good_matches = []
-        for m, n in matches:
-            if m.distance < 0.7 * n.distance:
-                good_matches.append(m)
-        
-        if len(good_matches) > min_match:
-            src_pts = np.float32([kps1[m.queryIdx].pt for m in good_matches]).reshape(-1, 1, 2)
-            dst_pts = np.float32([kps2[m.trainIdx].pt for m in good_matches]).reshape(-1, 1, 2)
-
-            M, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)
-            matches_mask = mask.ravel().tolist()
-
-            h, w = image1.shape
-            pts = np.float32([[0, 0], [0, h-1], [w-1, h-1], [w-1, 0]]).reshape(-1, 1, 2)
-            dst = cv2.perspectiveTransform(pts, M)
-
-            # Calculate the shift direction based on the transformation matrix M
-            shift_x = M[0, 2]
-            shift_y = M[1, 2]
-            return shift_x, shift_y, True  # Movement detected
-
-        else:
-            return 0, 0, False  # No movement detected
-        
-    def capture_screenshot(self, resize_factor=0.25):
-        screenshot = ImageGrab.grab(bbox=self.bbox)
-        screenshot = screenshot.resize(
-            (int(screenshot.width * resize_factor), int(screenshot.height * resize_factor)), Image.BILINEAR
-        )
-        grayscale_screenshot = screenshot.convert('L')
-        return np.array(grayscale_screenshot)
-
-    def perform_action(self, action):
-        actions = {'up': 'up', 'down': 'down', 'left': 'left', 'right': 'right'}
-        pydirectinput.press(actions[action], interval=.1)
-
-    def press_random_button(self):
-        button = random.choice(['a', 'b'])
-        pydirectinput.press(button)
-
-    def turn_direction(self, direction, min_hold_time=0.05, wait_time=.5):
-        keyboard.press(direction)   # Press and hold the key down
-        time.sleep(min_hold_time)   # Hold it for the minimum time
-        keyboard.release(direction) # Release the key
-        time.sleep(wait_time)   # Small delay before the next key press
 
     def explore(self):
         time.sleep(1)  # Pause for 1 second on startup
+        self.prev_image = self.capture_screenshot()
 
-        while True:  # Loop indefinitely to continue exploring
-            path = self.tile_map.find_nearest_unexplored()
+        while True:
+            # Find the path to the nearest unexplored area
+            path = self.find_nearest_unexplored()
             if not path:
-                print("No unexplored tiles found! Resetting map...")
-                self.tile_map.reset()  # Reset the tilemap when trapped
-                self.prev_image = None  # Reset the previous image
-                continue  # Restart the exploration
+                print("No unexplored tiles found! Exploration complete.")
+                break
 
             for direction in path:
-                if self.tile_map.current_direction != direction:
-                    # If the direction is different, first turn towards it
-                    self.turn_direction(direction)
-                    self.tile_map.set_direction(direction)
+                if self.current_direction != direction:
+                    self.move_direction(direction)
 
-                # Compute the new position
-                new_position = self.tile_map.move(direction)
+                new_position = self.tile_maps[self.current_tile_map_index].move(direction)
+                self.move_direction(direction)
+                time.sleep(self.interval)
 
-                # Perform the movement in the desired direction
-                self.turn_direction(direction)
+                current_image = self.capture_screenshot()
 
-               
-                current_image =  self.capture_screenshot()
+                # Check for warp detection by detecting black screen
+                if self.is_black_screen(current_image):
+                    print("Warp detected: screen is black.")
+                    while self.is_black_screen(current_image):
+                        time.sleep(0.5)
+                        current_image = self.capture_screenshot()
+                    time.sleep(0.5)
 
-                # If this is the first image, set it as the previous and continue
-                if self.prev_image is None:
-                    self.prev_image = current_image
-                    continue
+                    # Handle warp detection
+                    current_position = self.tile_maps[self.current_tile_map_index].move(self.current_direction)
+                    current_key = (self.current_tile_map_index, current_position)
+                    
+                    if current_key in self.warp_dict:
+                        self.current_tile_map_index, warp_position = self.warp_dict[current_key]
+                        self.tile_maps[self.current_tile_map_index].set_position(warp_position)
+                        print(f"Warped to map index {self.current_tile_map_index} at position {warp_position}")
 
-                # Detect movement using SIFT
-                shift_x, shift_y, _ = self.detect_movement_sift(self.prev_image, current_image)
+                        new_position = self.tile_maps[self.current_tile_map_index].move(self.current_direction)
+                        self.tile_maps[self.current_tile_map_index].set_position(new_position)
+                    else:
+                        # Create a new tile map for the warp destination
+                        new_tile_map = tilemap.TileMap(100, 100)
+                        self.tile_maps.append(new_tile_map)
+                        old_index = self.current_tile_map_index
+                        self.current_tile_map_index = len(self.tile_maps) - 1
+                        warp_position = (50, 50)  # Default starting position in the new tile map
+                        self.tile_maps[self.current_tile_map_index].set_position(warp_position)
 
-                # Check if the current movement contradicts previous knowledge
-                if abs(shift_x) > 5 or abs(shift_y) > 5:
+                        new_position = self.tile_maps[self.current_tile_map_index].move(self.current_direction)
+                        self.tile_maps[self.current_tile_map_index].set_position(new_position)
+
+                        # Record this warp connection in both directions
+                        new_key = (self.current_tile_map_index, warp_position)
+                        self.warp_dict[current_key] = new_key
+                        self.warp_dict[new_key] = current_key
+
+                        # Label the warp points on the maps
+                        self.tile_maps[old_index].map[current_position] = 'W'
+                        self.tile_maps[self.current_tile_map_index].map[warp_position] = 'W'
+                        print(f"Created new tile map at index {self.current_tile_map_index}")
+                        
+                    self.prev_image = self.capture_screenshot()
+                    self.tile_maps[self.current_tile_map_index].print_map()
+                    continue  # Skip the rest of the loop after a warp
+
+                # Detect movement between frames
+                shift_x, shift_y = self.detect_movement_sift(self.prev_image, current_image)
+                if (abs(shift_x) > 5 or abs(shift_y) > 5):
                     if abs(shift_x) > abs(shift_y):
                         if shift_x > 5:
                             print(f"Detected movement to the left: x_shift={shift_x}")
@@ -229,20 +195,15 @@ class PokemonExplorer:
                             print(f"Detected movement up: y_shift={shift_y}")
                         elif shift_y < -5:
                             print(f"Detected movement down: y_shift={shift_y}")
-                    self.tile_map.set_position(new_position)
-                    self.tile_map.mark_open(new_position)
+                    self.tile_maps[self.current_tile_map_index].set_position(new_position)
+                    self.tile_maps[self.current_tile_map_index].mark_open(new_position)
                 else:
                     print(f"No significant movement detected.  x_shift={shift_x}, y_shift={shift_y}")
-                    self.tile_map.mark_wall(new_position)
+                    self.tile_maps[self.current_tile_map_index].mark_wall(new_position)
 
-                # Update the previous image
                 self.prev_image = current_image
+                self.tile_maps[self.current_tile_map_index].print_map()
 
-                # Print the map after every move
-                self.tile_map.print_map()
-
-                # Press A or B randomly after each movement
-                self.press_random_button()
 
 # Example usage
 bbox = (1250, 110, 2600, 1100)  # Coordinates for the region you want to capture
