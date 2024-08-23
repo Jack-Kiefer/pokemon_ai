@@ -35,11 +35,11 @@ class PokemonExplorer:
         grayscale_screenshot = screenshot.convert('L')
         screenshot_array = np.array(grayscale_screenshot)
 
-        # # Save the screenshot
-        # screenshot_path = os.path.join(self.screenshot_dir, f'screenshot_{self.screenshot_count:04d}.png')
-        # grayscale_screenshot.save(screenshot_path)
-        # print(f"Saved screenshot: {screenshot_path}")
-        # self.screenshot_count += 1
+        # Save the screenshot
+        screenshot_path = os.path.join(self.screenshot_dir, f'screenshot_{self.screenshot_count:04d}.png')
+        grayscale_screenshot.save(screenshot_path)
+        print(f"Saved screenshot: {screenshot_path}")
+        self.screenshot_count += 1
 
         return screenshot_array
 

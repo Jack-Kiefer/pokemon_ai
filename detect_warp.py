@@ -25,7 +25,7 @@ def is_black_screen(image, threshold=20):
     return np.mean(image) < threshold
 
 def detect_warp():
-    bbox = (1250, 110, 2600, 1100)  # Adjust the bounding box as needed
+    bbox = (1270, 115, 2580, 1100)  # Adjust the bounding box as needed
     
     while True:
         time.sleep(1)  # Take a screenshot every second
