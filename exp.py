@@ -11,6 +11,7 @@ import random
 import imagehash
 from heapq import heappop, heappush
 from menu_checker import MenuDetector  # Assuming you have MenuDetector in a separate file named 'menu_detector.py'
+from movement_detector import detect_movement
 
 class PokemonExplorer:
     def __init__(self, bbox, interval=.7, pixel_size=(32, 32), resize_factor=0.25, screenshot_dir='screenshots', menu_images_dir='menu_images', hash_threshold=10):
@@ -24,7 +25,7 @@ class PokemonExplorer:
         os.makedirs(self.screenshot_dir, exist_ok=True)
 
         # List of all tile maps
-        self.tile_maps = [tilemap.TileMap(100, 100)]  # Start with one tile map
+        self.tile_maps = [tilemap.TileMap(500, 500)]  # Start with one tile map
         self.current_direction = 'left'
         self.current_tile_map_index = 0  # Index of the current tile map
         self.warp_dict = {}  # Two-way dictionary to map warp points
@@ -59,46 +60,6 @@ class PokemonExplorer:
         Image.fromarray(image).save(screenshot_path)
         print(f"Screenshot saved: {screenshot_path}")
 
-
-    def detect_movement_sift(self, image1, image2, min_match=10):
-            # Save the images for debugging
-        # self.save_screenshot(image1, "sift_image1")
-        # self.save_screenshot(image2, "sift_image2")
-
-        sift = cv2.SIFT_create()
-        kps1, des1 = sift.detectAndCompute(image1, None)
-        kps2, des2 = sift.detectAndCompute(image2, None)
-        
-        if des1 is None or des2 is None:
-            return 0, 0
-        
-        flann = cv2.FlannBasedMatcher(dict(algorithm=0, trees=5), dict(checks=50))
-        matches = flann.knnMatch(des1, des2, k=2)
-
-        good_matches = [m for m, n in matches if m.distance < 0.7 * n.distance]
-        
-        if len(good_matches) > min_match:
-            src_pts = np.float32([kps1[m.queryIdx].pt for m in good_matches]).reshape(-1, 1, 2)
-            dst_pts = np.float32([kps2[m.trainIdx].pt for m in good_matches]).reshape(-1, 1, 2)
-
-            M, _ = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)
-
-            if M is not None:  # Check if homography was found
-                shift_x = M[0, 2]
-                shift_y = M[1, 2]
-                return shift_x, shift_y
-            else:
-                print("Homography could not be computed. No significant movement detected.")
-                return 0, 0
-
-        print("Not enough good matches found. No significant movement detected.")
-        return 0, 0
-
-    def detect_movement(self):
-        shift_x, shift_y = self.detect_movement_sift(self.prev_image, self.current_image)
-        print(shift_x, shift_y)
-        return abs(shift_x) > 1 or abs(shift_y) > 1
-
     def move_direction(self, direction, min_hold_time=0.05, wait_time=0.5):
         keyboard.press(direction)
         time.sleep(min_hold_time)
@@ -121,32 +82,33 @@ class PokemonExplorer:
                 neighbor_pos = (current_pos[0] + dx, current_pos[1] + dy)
                 self.tile_maps[self.current_tile_map_index].map[neighbor_pos[0], neighbor_pos[1]].tile_type = ' '
             
-            # Spam 'X' to try to open the menu and validate escape
-            while trapped:
-                self.current_image = self.capture_screenshot()
-                time.sleep(0.2)
-                # Try moving in all directions
-                for direction in neighbors:
-                    self.move_direction(direction)
-                    time.sleep(0.5)  # Give some time to see if the movement is successful
-                    
-                    # Press 'X' to open the menu
-                    self.press_key('x')
-                    time.sleep(0.5)  # Wait for the menu to potentially open
+            self.spam_until_escape()
 
-                    # Check if the menu is open using MenuDetector
-                    if self.menu_detector.is_menu_open():
-                        print("Escape validated by menu detection.")
-                        # Press 'B' to close the menu
-                        self.press_key('b')
+    def spam_until_escape(self):
+        neighbors = self.neighbors()
+        # Spam 'X' to try to open the menu and validate escape
+        while True:
+            self.current_image = self.capture_screenshot()
+            time.sleep(0.2)
+            # Try moving in all directions
+            for direction in neighbors:
+                
+                # Press 'X' to open the menu
+                self.press_key('x')
+                time.sleep(0.2)  # Wait for the menu to potentially open
 
-                        trapped = False
-                        print("Moved out of the trap!")
-                        # self.find_and_relocate_closest_tile()
-                        return
-                    self.press_random_key()
+                # Check if the menu is open using MenuDetector
+                if self.menu_detector.is_menu_open():
+                    print("Escape validated by menu detection.")
+                    # Press 'B' to close the menu
+                    self.press_key('b')
 
-                    
+                    trapped = False
+                    print("Moved out of the trap!")
+                    # self.find_and_relocate_closest_tile()
+                    return
+                self.press_random_key()
+
 
                     
     def find_and_relocate_closest_tile(self):
@@ -234,7 +196,7 @@ class PokemonExplorer:
 
     def is_valid_position(self, pos, tile_map):
         x, y = pos
-        return 0 <= x < tile_map.width and 0 <= y < tile_map.height and tile_map.map[x, y].tile_type != '#'
+        return 0 <= x < tile_map.width and 0 <= y < tile_map.height and tile_map.map[x, y].tile_type != '#' and tile_map.map[x, y].tile_type != 'L'
 
     
     def press_key(self, key):
@@ -244,7 +206,7 @@ class PokemonExplorer:
 
     def press_random_key(self):
         # Define a list of possible keys to press
-        possible_keys = ["up", "left", "right", "down", "a", "b", "a", "b", "a", "b"]
+        possible_keys = ["up", "left", "right", "down", "a", "b", "a", "b", "a", "a"]
         
         # Randomly select one of the keys
         selected_key = random.choice(possible_keys)
@@ -357,8 +319,9 @@ class PokemonExplorer:
                     return True # Skip the rest of the loop after a warp
 
                 else:
-                    return False
-                    print("No menu detected. Warp is not confirmed.")
+                    print("Warp not confirmed. Possible battle or cutscene. Spamming")
+                    self.spam_until_escape()
+                    self.tile_maps[self.current_tile_map_index].mark_grass()
 
 
 
@@ -395,7 +358,7 @@ class PokemonExplorer:
 
                 self.current_image = self.capture_screenshot()
                 
-                if self.detect_movement():
+                if detect_movement(self.prev_image, self.current_image):
                     self.tile_maps[self.current_tile_map_index].set_position(new_position)
                     self.tile_maps[self.current_tile_map_index].mark_open(new_position, imagehash.average_hash(Image.fromarray(self.current_image)))
                 else:
@@ -404,6 +367,11 @@ class PokemonExplorer:
 
                 self.prev_image = self.current_image
                 self.tile_maps[self.current_tile_map_index].print_map()
+                if random.random() > .5:
+                    self.press_key("a")
+                else:
+                    self.press_key("b")
+
 
     def get_direction(self, current_pos, next_pos):
         if next_pos[0] > current_pos[0]:
