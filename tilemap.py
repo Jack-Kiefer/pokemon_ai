@@ -27,7 +27,6 @@ class TileMap:
             return True
         else:
             if (abs(hash - self.map[self.current_position].image_hash) < 3):
-                print(abs(hash - self.map[self.current_position].image_hash))
                 return True
             else:
                 return False
@@ -54,10 +53,11 @@ class TileMap:
             return (x + 1, y)
 
     def mark_wall(self, position):
-        if self.map[position].tile_type == '.':
-            self.map[position].tile_type = 'L'
-        else:
-            self.map[position].tile_type = '#'
+        self.map[position].tile_type = '#'
+        self.update_bounds(position)
+
+    def mark_ledge(self, position):
+        self.map[position].tile_type = 'L'
         self.update_bounds(position)
 
     def mark_grass(self):
@@ -67,7 +67,7 @@ class TileMap:
     def mark_open(self, position, image_hash):
         tile = self.map[position]
         tile.tile_type = '.'
-        if image_hash == None:
+        if not tile.image_hash:
             tile.image_hash = image_hash
         self.update_bounds(position)
 
@@ -93,10 +93,10 @@ class TileMap:
         x, y = self.current_position
 
         # Define the boundaries of the 40x40 area around the player
-        min_x = max(x - 20, 0)
-        max_x = min(x + 20, self.width - 1)
-        min_y = max(y - 20, 0)
-        max_y = min(y + 20, self.height - 1)
+        min_x = max(x - 50, 0)
+        max_x = min(x + 50, self.width - 1)
+        min_y = max(y - 15, 0)
+        max_y = min(y + 15, self.height - 1)
 
         # Temporarily mark the current position as 'X' for printing
         temp_map = np.full((self.width, self.height), ' ')
@@ -106,7 +106,7 @@ class TileMap:
 
         temp_map[x, y] = 'X'
 
-        print("\nCurrent Map (40x40 view):")
+        print("\nCurrent Map (30x100 view):")
         for j in range(min_y, max_y + 1):
             row = "".join(temp_map[i][j] for i in range(min_x, max_x + 1))
             print(row)

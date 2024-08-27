@@ -1,16 +1,24 @@
-# movement_detector.py
-
 import numpy as np
 import cv2
 from PIL import Image
+import os
+import json
+import tensorflow as tf
+import time
+from PIL import Image
+from PIL import ImageGrab, Image
 
 def save_screenshot(image, name, screenshot_dir='screenshots', count=0):
     """
     Save a screenshot to the screenshot directory with a given name.
     """
+    if not os.path.exists(screenshot_dir):
+        os.makedirs(screenshot_dir)
+    
     screenshot_path = f'{screenshot_dir}/{name}_{count:04d}.png'
     Image.fromarray(image).save(screenshot_path)
     print(f"Saved screenshot: {screenshot_path}")
+    return screenshot_path
 
 def find_best_shift(image1, image2, search_radius=30):
     """
@@ -38,7 +46,7 @@ def find_best_shift(image1, image2, search_radius=30):
 
     return best_shift, max_corr
 
-def sift_movement(image1, image2, min_match=10):
+def sift_movement(image1, image2, threshold, min_match=10):
     """
     Detect movement using SIFT feature matching.
 
@@ -68,11 +76,11 @@ def sift_movement(image1, image2, min_match=10):
         if M is not None:  # Check if homography was found
             shift_x = M[0, 2]
             shift_y = M[1, 2]
-            return shift_x, shift_y
+            return abs(shift_x) > threshold or abs(shift_y) > threshold
 
     return 0, 0
 
-def optical_flow_movement(image1, image2, max_offset=19, threshold=5.0, debug=False, screenshot_dir='screenshots', count=0):
+def optical_flow_movement(image1, image2, max_offset=40, threshold=3.5, debug=False, screenshot_dir='screenshots', count=0):
     """
     Detect movement using Optical Flow with capped length of pixel offsets and provide debug information.
 
@@ -107,34 +115,95 @@ def optical_flow_movement(image1, image2, max_offset=19, threshold=5.0, debug=Fa
         hsv[..., 2] = cv2.normalize(capped_mag, None, 0, 255, cv2.NORM_MINMAX)
         flow_visual = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
 
+        # # Save the flow visualization if debug is enabled
+        # flow_visual_path = save_screenshot(flow_visual, 'flow_visual', screenshot_dir=screenshot_dir, count=count)
+        # print(f"Saved flow visualization: {flow_visual_path}")
+
     # Check if there is significant movement
     return avg_magnitude > threshold
 
-def detect_movement(image1, image2,  min_match=10, sift_threshold=5, optical_flow_threshold=5.0, max_offset=19, debug=True, count=0):
-    """
-    Detect movement by combining SIFT feature matching and Optical Flow strategies.
-
-    :param image1: Numpy array of the first image.
-    :param image2: Numpy array of the second image.
-    :param min_match: Minimum number of good SIFT matches required to consider movement detected.
-    :param sift_threshold: Threshold for shift detection using SIFT.
-    :param optical_flow_threshold: Threshold for movement detection using Optical Flow.
-    :param max_offset: Maximum pixel offset to cap the flow vectors in Optical Flow.
-    :param debug: Boolean indicating whether to print debug information.
-    :param count: Counter for naming the saved screenshots.
-    :return: Boolean indicating if movement was detected.
-    """
-    # Use SIFT method to detect movement
-    sift_shift = sift_movement(image1, image2, min_match)
-    print(f"SIFT detected shift: {sift_shift}")
+# def detect_movement(image1, image2, model, min_match=10, sift_threshold=3, optical_flow_threshold=4, max_offset=19, debug=False):
+#     """
+#     Detect movement using traditional computer vision methods and ML prediction.
     
-    # Use Optical Flow to detect movement with capped offset and debugging
-    optical_flow_detected = optical_flow_movement(image1, image2, max_offset=max_offset, threshold=optical_flow_threshold, debug=debug, screenshot_dir='screenshots', count=count)
-    print(f"Optical Flow detected: {optical_flow_detected}")
+#     :param image1: Numpy array of the first image.
+#     :param image2: Numpy array of the second image.
+#     :param model: Preloaded ML model to predict movement.
+#     :param min_match: Minimum matches for SIFT.
+#     :param sift_threshold: SIFT movement detection threshold.
+#     :param optical_flow_threshold: Optical Flow movement detection threshold.
+#     :param max_offset: Maximum offset for Optical Flow.
+#     :param debug: Debug mode for additional output.
+#     :return: Boolean indicating if movement was detected.
+#     """
 
-    # Check if either method detects movement above the threshold
-    if (abs(sift_shift[0]) > sift_threshold or abs(sift_shift[1]) > sift_threshold or
-        optical_flow_detected):
-        return True
-    
-    return False
+#     # Ensure images are in grayscale for SIFT and Optical Flow
+#     if len(image1.shape) == 3:
+#         image1_gray = cv2.cvtColor(image1, cv2.COLOR_BGR2GRAY)
+#     else:
+#         image1_gray = image1
+
+#     if len(image2.shape) == 3:
+#         image2_gray = cv2.cvtColor(image2, cv2.COLOR_BGR2GRAY)
+#     else:
+#         image2_gray = image2
+
+#     # Use traditional methods to detect movement
+#     sift_shift = sift_movement(image1_gray, image2_gray, min_match)
+#     optical_flow_detected = optical_flow_movement(image1_gray, image2_gray, max_offset=max_offset, threshold=optical_flow_threshold, debug=debug)
+
+#     # Preprocess images for the ML model
+#     img1_resized = cv2.resize(image1, (128, 128)).astype('float32') / 255.0
+#     img2_resized = cv2.resize(image2, (128, 128)).astype('float32') / 255.0
+#     img1_resized = np.expand_dims(img1_resized, axis=0)
+#     img2_resized = np.expand_dims(img2_resized, axis=0)
+#     combined_images = np.concatenate([img1_resized, img2_resized], axis=-1)
+
+#     # Make a prediction
+#     ml_detected = model.predict(combined_images)[0, 0] > 0.5
+
+#     # Combine results
+#     movement_detected = ml_detected or (abs(sift_shift[0]) > sift_threshold or abs(sift_shift[1]) > sift_threshold or optical_flow_detected)
+
+#     return movement_detected
+
+def prepare_images(image1, image2):
+    # Resize images and ensure they are in RGB format (three channels)
+    img1_resized = cv2.resize(image1, (128, 128)).astype('float32') / 255.0
+    img2_resized = cv2.resize(image2, (128, 128)).astype('float32') / 255.0
+
+    # Ensure both images have three channels if they are grayscale
+    if img1_resized.ndim == 2:
+        img1_resized = cv2.cvtColor(img1_resized, cv2.COLOR_GRAY2RGB)
+    if img2_resized.ndim == 2:
+        img2_resized = cv2.cvtColor(img2_resized, cv2.COLOR_GRAY2RGB)
+
+    # Concatenate images along the channel axis to form an input with 6 channels
+    combined_images = np.concatenate([img1_resized, img2_resized], axis=2)
+
+    # Add batch dimension
+    combined_images = np.expand_dims(combined_images, axis=0)
+    return combined_images
+
+def detect_movement(image1, image2, model, count, min_match=10, sift_threshold=5, optical_flow_threshold=4.5, max_offset=19, debug=False):
+    """
+    Use a pre-trained ML model to predict movement between two images.
+
+    :param image1: Numpy array of the first RGB image.
+    :param image2: Numpy array of the second RGB image.
+    :param model: Pre-trained ML model for movement detection.
+    :return: Integer indicating movement category: 0 (no movement), 1 (movement detected), or 2 (ledge).
+    """
+    # save_screenshot(image1, 'image1', count=count)
+    # save_screenshot(image2, 'image2', count=count)
+
+    # Prepare images for the model
+    input_data = prepare_images(image1, image2)
+
+    # Make a prediction
+    prediction = model.predict(input_data)
+
+    # Get the index of the class with the highest probability
+    predicted_class = np.argmax(prediction, axis=1)[0]
+
+    return predicted_class

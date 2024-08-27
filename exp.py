@@ -12,10 +12,14 @@ import imagehash
 from heapq import heappop, heappush
 from menu_checker import MenuDetector  # Assuming you have MenuDetector in a separate file named 'menu_detector.py'
 from movement_detector import detect_movement
+import signal
+import json
+import tensorflow as tf
 
 class PokemonExplorer:
-    def __init__(self, bbox, interval=.7, pixel_size=(32, 32), resize_factor=0.25, screenshot_dir='screenshots', menu_images_dir='menu_images', hash_threshold=10):
+    def __init__(self, bbox, model, interval=2.5, pixel_size=(32, 32), resize_factor=0.25, screenshot_dir='screenshots', menu_images_dir='menu_images', hash_threshold=20):
         self.bbox = bbox
+        self.model = model
         self.interval = interval
         self.pixel_size = pixel_size
         self.resize_factor = resize_factor
@@ -30,11 +34,61 @@ class PokemonExplorer:
         self.current_tile_map_index = 0  # Index of the current tile map
         self.warp_dict = {}  # Two-way dictionary to map warp points
         self.prev_image = None  # Store the previous image for SIFT comparison
+        self.prev_hash = None
         self.current_image = None  # Store the current image for SIFT comparison
         self.screenshot_count = 0  # Counter for the screenshots
+        self.counter = 2727
 
         # Initialize MenuDetector
         self.menu_detector = MenuDetector()
+
+             # Set up signal handler for graceful exit
+        signal.signal(signal.SIGINT, self.signal_handler)
+
+    def signal_handler(self, sig, frame):
+        """
+        Signal handler for SIGINT (Ctrl+C).
+        Saves the tile maps to a file before exiting.
+        """
+        print("\nCtrl+C detected. Saving tile maps to file...")
+        self.save_tile_maps_to_text_files()
+        print("Tile maps saved. Exiting...")
+        exit(0)
+
+    def save_tile_maps_to_text_files(self, directory='tile_maps_text'):
+        """
+        Saves each tile map to individual text files, representing the entire explored area.
+        """
+        # process_images(self.image_pairs)
+
+        
+
+        for index, tile_map in enumerate(self.tile_maps):
+            file_path = os.path.join(directory, f'tile_map_{index:04d}.txt')
+            with open(file_path, 'w') as file:
+                # Define the boundaries of the explored area
+                min_x = tile_map.min_x
+                max_x = tile_map.max_x
+                min_y = tile_map.min_y
+                max_y = tile_map.max_y
+
+                # Temporarily mark the current position as 'X' for saving
+                temp_map = np.full((tile_map.width, tile_map.height), ' ')
+                for i in range(min_x, max_x + 1):
+                    for j in range(min_y, max_y + 1):
+                        temp_map[i, j] = tile_map.map[i, j].tile_type
+
+                # Mark the current position with 'X'
+                x, y = tile_map.current_position
+                temp_map[x, y] = 'X'
+
+                file.write(f"Tile Map {index} (explored area):\n")
+                for j in range(min_y, max_y + 1):
+                    row = "".join(temp_map[i][j] for i in range(min_x, max_x + 1))
+                    file.write(row + "\n")
+            
+            print(f"Tile map {index} saved as {file_path}")
+
 
     def capture_screenshot(self):
         screenshot = ImageGrab.grab(bbox=self.bbox)
@@ -45,7 +99,7 @@ class PokemonExplorer:
         screenshot_array = np.array(grayscale_screenshot)
         return screenshot_array
 
-    def is_black_or_white_screen(self, image, threshold=20):
+    def is_black_or_white_screen(self, image, threshold=10):
         return np.mean(image) < threshold or np.mean(image) > 255 - threshold
 
     def save_screenshot(self, image, description):
@@ -60,7 +114,14 @@ class PokemonExplorer:
         Image.fromarray(image).save(screenshot_path)
         print(f"Screenshot saved: {screenshot_path}")
 
-    def move_direction(self, direction, min_hold_time=0.05, wait_time=0.5):
+    def move_direction(self, direction, min_hold_time=0.05, wait_time=0.40):
+        keyboard.press(direction)
+        time.sleep(min_hold_time)
+        keyboard.release(direction)
+        time.sleep(wait_time)
+        self.current_direction = direction
+
+    def turn_direction(self, direction, min_hold_time=0.05, wait_time=0.05):
         keyboard.press(direction)
         time.sleep(min_hold_time)
         keyboard.release(direction)
@@ -85,62 +146,67 @@ class PokemonExplorer:
             self.spam_until_escape()
 
     def spam_until_escape(self):
-        neighbors = self.neighbors()
-        # Spam 'X' to try to open the menu and validate escape
         while True:
-            self.current_image = self.capture_screenshot()
-            time.sleep(0.2)
-            # Try moving in all directions
-            for direction in neighbors:
-                
-                # Press 'X' to open the menu
-                self.press_key('x')
-                time.sleep(0.2)  # Wait for the menu to potentially open
-
-                # Check if the menu is open using MenuDetector
-                if self.menu_detector.is_menu_open():
-                    print("Escape validated by menu detection.")
-                    # Press 'B' to close the menu
-                    self.press_key('b')
-
-                    trapped = False
-                    print("Moved out of the trap!")
-                    # self.find_and_relocate_closest_tile()
-                    return
-                self.press_random_key()
-
+            if (not self.in_cutscene()):
+                return 
+            self.press_random_key()
+    
+    def in_cutscene(self):
+        # Press 'X' to open the menu
+        self.press_key('x')
+        time.sleep(.05)
+        # Check if the menu is open using MenuDetector
+        if self.menu_detector.is_menu_open():
+            self.press_key('b')
+            time.sleep(.05)
+            return False
+        return True
 
                     
-    def find_and_relocate_closest_tile(self):
+    def find_and_relocate_closest_tile(self, relocation_threshold=10):
+        """
+        Find and relocate to the closest tile based on hash similarity.
+        Relocate if the current tile hash is very different from the screenshot hash.
+
+        :param relocation_threshold: Threshold for hash difference to trigger relocation (default is 10).
+        """
+        self.current_image = self.capture_screenshot()
         current_image_hash = imagehash.average_hash(Image.fromarray(self.current_image))
-        closest_hash_diff = float('inf')
-        closest_position = None
-        closest_map_index = None
+        
+        # Get the current tile and its hash
+        current_x, current_y = self.tile_maps[self.current_tile_map_index].current_position
+        current_tile = self.tile_maps[self.current_tile_map_index].map[(current_x, current_y)]
+        current_tile_hash = current_tile.image_hash if current_tile else None
 
-        hash_threshold = 5  # Define the threshold for hash closeness
+        # Check if relocation is necessary
+        if current_tile_hash != None and current_image_hash - current_tile_hash > relocation_threshold:
+            print("Current tile hash is significantly different. Searching for a closer match.")
+            
+            closest_hash_diff = float('inf')
+            closest_position = None
+            closest_map_index = None
 
-        for map_index, tile_map in enumerate(self.tile_maps):
-            for x in range(tile_map.width):
-                for y in range(tile_map.height):
-                    cell_hash = tile_map.map[x, y].hash_value
-                    if cell_hash:
-                        hash_diff = current_image_hash - cell_hash
-                        if hash_diff < closest_hash_diff:
-                            closest_hash_diff = hash_diff
-                            closest_position = (x, y)
-                            closest_map_index = map_index
+            # Search for the closest matching tile across all tile maps
+            for i in range(len(self.tile_maps)):
+                for x in range(self.tile_maps[i].width):
+                    for y in range(self.tile_maps[i].height):
+                        tile = self.tile_maps[i].map[(x, y)]
+                        if tile and tile.image_hash:
+                            hash_diff = current_image_hash - tile.image_hash
+                            if hash_diff < closest_hash_diff:
+                                closest_hash_diff = hash_diff
+                                closest_position = (x, y)
+                                closest_map_index = i
 
-        if closest_hash_diff <= hash_threshold and closest_position:
-            self.current_tile_map_index = closest_map_index
-            self.tile_maps[self.current_tile_map_index].set_position(closest_position)
-            print(f"Relocated to tile map {self.current_tile_map_index} at position {closest_position} based on hash similarity.")
+            if closest_position is not None and closest_map_index is not None:
+                self.current_tile_map_index = closest_map_index
+                self.tile_maps[self.current_tile_map_index].set_position(closest_position)
+                print(f"Relocated to tile map {self.current_tile_map_index} at position {closest_position} based on hash similarity.")
+            else:
+                print("No suitable match found. Keeping current position.")
         else:
-            new_tile_map = tilemap.TileMap(100, 100)
-            self.tile_maps.append(new_tile_map)
-            self.current_tile_map_index = len(self.tile_maps) - 1
-            start_position = (50, 50)
-            self.tile_maps[self.current_tile_map_index].set_position(start_position)
-            print(f"Created new tile map at index {self.current_tile_map_index} due to hash mismatch.")
+            print("Current tile hash is similar. No relocation needed.")
+
 
     def bfs_search(self):
         start_map = self.current_tile_map_index
@@ -204,9 +270,14 @@ class PokemonExplorer:
         time.sleep(0.05)
         keyboard.release(key)
 
+    def press_a(self):
+        keyboard.press("a")
+        time.sleep(0.05)
+        keyboard.release("a")
+
     def press_random_key(self):
         # Define a list of possible keys to press
-        possible_keys = ["up", "left", "right", "down", "a", "b", "a", "b", "a", "a"]
+        possible_keys = ["up", "left", "right", "down", "a", "b", "a", "b", "a", "b", "up"]
         
         # Randomly select one of the keys
         selected_key = random.choice(possible_keys)
@@ -218,111 +289,103 @@ class PokemonExplorer:
 
         print(f"Pressed key: {selected_key}")  # Optional: Log the pressed key for debugging
 
-        
-    def start_battle(self):
-        self.current_image = self.capture_screenshot()
-        while not self.is_black_or_white_screen(self.current_image):
-            time.sleep(0.2)
-            self.current_image = self.capture_screenshot()
-            self.press_key("a")
+    def battle_or_cutscene(self):
+        print("Warp not confirmed. Possible battle or cutscene. Spamming")
+        self.spam_until_escape()
+        self.tile_maps[self.current_tile_map_index].mark_grass()
+        self.find_and_relocate_closest_tile()
+
+    def warp(self, hit_wall):
+        print("Warp confirmed by menu detection.")
+
+        # Handle warp detection
+        current_position = self.tile_maps[self.current_tile_map_index].current_position
+        if (hit_wall):
+            current_position = self.tile_maps[self.current_tile_map_index].move(self.current_direction)
+        current_key = (self.current_tile_map_index, current_position)
+
+        if current_key in self.warp_dict:
+            old_index = self.current_tile_map_index
+            self.current_tile_map_index, warp_position = self.warp_dict[current_key]
+            self.tile_maps[self.current_tile_map_index].set_position(warp_position)
+            print(f"Warped to map index {self.current_tile_map_index} at position {warp_position}")
+
+            self.tile_maps[old_index].map[current_position].tile_type = 'W'
+            self.tile_maps[self.current_tile_map_index].map[warp_position].tile_type = 'W'
+
+            new_position = self.tile_maps[self.current_tile_map_index].move(self.current_direction)
+            self.tile_maps[self.current_tile_map_index].set_position(new_position)
+        elif any(
+            self.is_valid_position((current_position[0] + dx, current_position[1] + dy), self.tile_maps[self.current_tile_map_index]) and
+            self.tile_maps[self.current_tile_map_index].map[current_position[0] + dx, current_position[1] + dy].tile_type == 'W'
+            for dx, dy in self.neighbors().values()):
+            # Find the neighboring warp tile
+            for (dx, dy) in self.neighbors().values():
+                neighbor_pos = (current_position[0] + dx, current_position[1] + dy)
+                if self.is_valid_position(neighbor_pos, self.tile_maps[self.current_tile_map_index]) and \
+                        self.tile_maps[self.current_tile_map_index].map[neighbor_pos[0], neighbor_pos[1]].tile_type == 'W':
+                    
+                    # Find the corresponding warp destination from the neighboring warp
+                    neighbor_key = (self.current_tile_map_index, neighbor_pos)
+                    if neighbor_key in self.warp_dict:
+                        warp_map, warp_pos = self.warp_dict[neighbor_key]
+                        warp_pos_offset = (warp_pos[0] - dx, warp_pos[1] - dy)
+                        # Create a warp between current_position and the offset warp position
+                        self.warp_dict[current_key] = (warp_map, warp_pos_offset)
+                        self.warp_dict[(warp_map, warp_pos_offset)] = current_key
+
+                        # Mark both positions as warp tiles
+                        self.tile_maps[self.current_tile_map_index].map[current_position[0], current_position[1]].tile_type = 'W'
+                        self.tile_maps[warp_map].map[warp_pos_offset[0], warp_pos_offset[1]].tile_type = 'W'
+
+                        print(f"Warp created between map {self.current_tile_map_index} at {current_position} and {warp_map} at {warp_pos_offset}")
+                        # Move the player to the new warp position
+                        self.current_tile_map_index = warp_map
+                        self.tile_maps[self.current_tile_map_index].set_position(warp_pos_offset)
+                        new_position = self.tile_maps[self.current_tile_map_index].move(self.current_direction)
+                        self.tile_maps[self.current_tile_map_index].set_position(new_position)
+                        return True
+        else:
+            # Create a new tile map for the warp destination
+            new_tile_map = tilemap.TileMap(100, 100)
+            self.tile_maps.append(new_tile_map)
+            old_index = self.current_tile_map_index
+            self.current_tile_map_index = len(self.tile_maps) - 1
+            warp_position = (50, 50)  # Default starting position in the new tile map
+            self.tile_maps[self.current_tile_map_index].set_position(warp_position)
+
+            new_position = self.tile_maps[self.current_tile_map_index].move(self.current_direction)
+            self.tile_maps[self.current_tile_map_index].set_position(new_position)
+
+            # Record this warp connection in both directions
+            new_key = (self.current_tile_map_index, warp_position)
+            self.warp_dict[current_key] = new_key
+            self.warp_dict[new_key] = current_key
+
+            # Label the warp points on the maps
+            self.tile_maps[old_index].map[current_position].tile_type = 'W'
+            self.tile_maps[self.current_tile_map_index].map[warp_position].tile_type = 'W'
+            print(f"Created new tile map at index {self.current_tile_map_index}")
+
+        self.prev_image = self.capture_screenshot()
+        self.tile_maps[self.current_tile_map_index].print_map()
+        return True # Skip the rest of the loop after a warp
     
-    def check_for_warp(self):
+    def check_for_warp_or_battle(self, hit_wall):
         # Check for black screen
         start_time = time.time()
-        while time.time() - start_time < self.interval:
+        black_screen = False
+        while time.time() - start_time < 2:
             self.current_image = self.capture_screenshot()
             if self.is_black_or_white_screen(self.current_image):
-                print("Possible warp detected: screen is black.")
-                while self.is_black_or_white_screen(self.current_image):
-                    self.current_image = self.capture_screenshot()
-                time.sleep(1.5)
-
-                # Press 'x' to open the menu
-                self.press_key('x')
-                time.sleep(0.5)  # Wait for the menu to potentially open
-
-                # Check if the menu is open using MenuDetector
-                if self.menu_detector.is_menu_open():
-                    print("Warp confirmed by menu detection.")
-                    # Press 'b' to close the menu
-                    self.press_key('b')
-
-                    # Handle warp detection
-                    current_position = self.tile_maps[self.current_tile_map_index].move(self.current_direction)
-                    current_key = (self.current_tile_map_index, current_position)
-
-                    if current_key in self.warp_dict:
-                        old_index = self.current_tile_map_index
-                        self.current_tile_map_index, warp_position = self.warp_dict[current_key]
-                        self.tile_maps[self.current_tile_map_index].set_position(warp_position)
-                        print(f"Warped to map index {self.current_tile_map_index} at position {warp_position}")
-
-                        self.tile_maps[old_index].map[current_position].tile_type = 'W'
-                        self.tile_maps[self.current_tile_map_index].map[warp_position].tile_type = 'W'
-
-                        new_position = self.tile_maps[self.current_tile_map_index].move(self.current_direction)
-                        self.tile_maps[self.current_tile_map_index].set_position(new_position)
-                    elif any(
-                        self.is_valid_position((current_position[0] + dx, current_position[1] + dy), self.tile_maps[self.current_tile_map_index]) and
-                        self.tile_maps[self.current_tile_map_index].map[current_position[0] + dx, current_position[1] + dy].tile_type == 'W'
-                        for dx, dy in self.neighbors().values()):
-                        # Find the neighboring warp tile
-                        for (dx, dy) in self.neighbors().values():
-                            neighbor_pos = (current_position[0] + dx, current_position[1] + dy)
-                            if self.is_valid_position(neighbor_pos, self.tile_maps[self.current_tile_map_index]) and \
-                                    self.tile_maps[self.current_tile_map_index].map[neighbor_pos[0], neighbor_pos[1]].tile_type == 'W':
-                                
-                                # Find the corresponding warp destination from the neighboring warp
-                                neighbor_key = (self.current_tile_map_index, neighbor_pos)
-                                if neighbor_key in self.warp_dict:
-                                    warp_map, warp_pos = self.warp_dict[neighbor_key]
-                                    warp_pos_offset = (warp_pos[0] - dx, warp_pos[1] - dy)
-                                    # Create a warp between current_position and the offset warp position
-                                    self.warp_dict[current_key] = (warp_map, warp_pos_offset)
-                                    self.warp_dict[(warp_map, warp_pos_offset)] = current_key
-
-                                    # Mark both positions as warp tiles
-                                    self.tile_maps[self.current_tile_map_index].map[current_position[0], current_position[1]].tile_type = 'W'
-                                    self.tile_maps[warp_map].map[warp_pos_offset[0], warp_pos_offset[1]].tile_type = 'W'
-
-                                    print(f"Warp created between map {self.current_tile_map_index} at {current_position} and {warp_map} at {warp_pos_offset}")
-                                    # Move the player to the new warp position
-                                    self.current_tile_map_index = warp_map
-                                    self.tile_maps[self.current_tile_map_index].set_position(warp_pos_offset)
-                                    new_position = self.tile_maps[self.current_tile_map_index].move(self.current_direction)
-                                    self.tile_maps[self.current_tile_map_index].set_position(new_position)
-                                    return True
-                    else:
-                        # Create a new tile map for the warp destination
-                        new_tile_map = tilemap.TileMap(100, 100)
-                        self.tile_maps.append(new_tile_map)
-                        old_index = self.current_tile_map_index
-                        self.current_tile_map_index = len(self.tile_maps) - 1
-                        warp_position = (50, 50)  # Default starting position in the new tile map
-                        self.tile_maps[self.current_tile_map_index].set_position(warp_position)
-
-                        new_position = self.tile_maps[self.current_tile_map_index].move(self.current_direction)
-                        self.tile_maps[self.current_tile_map_index].set_position(new_position)
-
-                        # Record this warp connection in both directions
-                        new_key = (self.current_tile_map_index, warp_position)
-                        self.warp_dict[current_key] = new_key
-                        self.warp_dict[new_key] = current_key
-
-                        # Label the warp points on the maps
-                        self.tile_maps[old_index].map[current_position].tile_type = 'W'
-                        self.tile_maps[self.current_tile_map_index].map[warp_position].tile_type = 'W'
-                        print(f"Created new tile map at index {self.current_tile_map_index}")
-
-                    self.prev_image = self.capture_screenshot()
-                    self.tile_maps[self.current_tile_map_index].print_map()
-                    return True # Skip the rest of the loop after a warp
-
-                else:
-                    print("Warp not confirmed. Possible battle or cutscene. Spamming")
-                    self.spam_until_escape()
-                    self.tile_maps[self.current_tile_map_index].mark_grass()
-
+                black_screen = True
+            a = not self.in_cutscene()
+            if a and black_screen:
+                self.warp(hit_wall)
+                return
+            if a:
+                return
+        self.battle_or_cutscene()
 
 
     def explore(self):
@@ -332,45 +395,55 @@ class PokemonExplorer:
         while True:
             # Use BFS to find the path to the nearest unexplored area
             path = self.bfs_search()
+            possible_directions = ["up", "down", "left", "right"]
             if not path:
                 print("No unexplored tiles found! Exploration complete.")
-                break
+                path.append((random.choice(possible_directions), 0))
 
             for direction, map_index in path:
                 # direction = input()
-                image = self.capture_screenshot()
-                hash = imagehash.average_hash(Image.fromarray(image))
-
-                if not self.tile_maps[self.current_tile_map_index].check_hash(hash):
-                    print("Bad hash")
-
-                if direction == 'warp':
-                    self.current_tile_map_index = map_index
-                    continue
+                # image = self.capture_screenshot()
 
                 if self.current_direction != direction:
-                    self.move_direction(direction)
+                    self.turn_direction(direction)
+                    if self.in_cutscene():
+                        self.check_for_warp_or_battle(True)
+                        break
 
                 new_position = self.tile_maps[self.current_tile_map_index].move(direction)
                 self.move_direction(direction)
-                if self.check_for_warp():
-                    break
 
                 self.current_image = self.capture_screenshot()
-                
-                if detect_movement(self.prev_image, self.current_image):
+
+                hit_wall = False
+                a = detect_movement(self.prev_image, self.current_image, self.model, count = self.counter)
+                if a == 1:
                     self.tile_maps[self.current_tile_map_index].set_position(new_position)
                     self.tile_maps[self.current_tile_map_index].mark_open(new_position, imagehash.average_hash(Image.fromarray(self.current_image)))
-                else:
+                elif a == 0:
                     self.tile_maps[self.current_tile_map_index].mark_wall(new_position)
-                    self.handle_trapped_scenario()
+                    self.press_a()
+                    # time.sleep(.2)
+                    hit_wall = True
+                    # self.handle_trapped_scenario()
+                elif a == 2:
+                    self.tile_maps[self.current_tile_map_index].set_position(new_position)
+                    self.tile_maps[self.current_tile_map_index].mark_ledge(new_position)
+                    new_position = self.tile_maps[self.current_tile_map_index].move(direction)
+                    self.tile_maps[self.current_tile_map_index].set_position(new_position)
+                self.counter += 1
 
                 self.prev_image = self.current_image
+                # if random.random() > .5:
+                #     self.press_a()
+                #     time.sleep(.2)
+                # else:
+                #     self.press_key("b")
+                
                 self.tile_maps[self.current_tile_map_index].print_map()
-                if random.random() > .5:
-                    self.press_key("a")
-                else:
-                    self.press_key("b")
+                if self.in_cutscene():
+                    self.check_for_warp_or_battle(hit_wall)
+                    break
 
 
     def get_direction(self, current_pos, next_pos):
@@ -386,5 +459,6 @@ class PokemonExplorer:
 
 # Example usage
 bbox = (1275, 135, 2565, 1100)  # Coordinates for the region you want to capture
-explorer = PokemonExplorer(bbox=bbox)
+model = tf.keras.models.load_model('movement_detection_model.h5')
+explorer = PokemonExplorer(bbox=bbox, model=model)
 explorer.explore()
