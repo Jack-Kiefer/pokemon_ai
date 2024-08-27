@@ -1,0 +1,11 @@
+Tile Map 47 (explored area):
+ #     
+#..X   
+ .     
+ .    #
+#.....G
+      .
+      .
+      .
+      .
+      W

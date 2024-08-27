@@ -66,7 +66,8 @@ class TileMap:
 
     def mark_open(self, position, image_hash):
         tile = self.map[position]
-        tile.tile_type = '.'
+        if tile.tile_type != 'G':
+            tile.tile_type = '.'
         if not tile.image_hash:
             tile.image_hash = image_hash
         self.update_bounds(position)

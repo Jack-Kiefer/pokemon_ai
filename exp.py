@@ -29,15 +29,15 @@ class PokemonExplorer:
         os.makedirs(self.screenshot_dir, exist_ok=True)
 
         # List of all tile maps
-        self.tile_maps = [tilemap.TileMap(500, 500)]  # Start with one tile map
-        self.current_direction = 'left'
+        self.tile_maps = [tilemap.TileMap(800, 800)]  # Start with one tile map
+        self.current_direction = 'up'
         self.current_tile_map_index = 0  # Index of the current tile map
         self.warp_dict = {}  # Two-way dictionary to map warp points
         self.prev_image = None  # Store the previous image for SIFT comparison
         self.prev_hash = None
         self.current_image = None  # Store the current image for SIFT comparison
         self.screenshot_count = 0  # Counter for the screenshots
-        self.counter = 2727
+        self.counter = 2932
 
         # Initialize MenuDetector
         self.menu_detector = MenuDetector()
@@ -277,7 +277,7 @@ class PokemonExplorer:
 
     def press_random_key(self):
         # Define a list of possible keys to press
-        possible_keys = ["up", "left", "right", "down", "a", "b", "a", "b", "a", "b", "up"]
+        possible_keys = ["up", "left", "right", "down", "a", "b", "a", "b",]
         
         # Randomly select one of the keys
         selected_key = random.choice(possible_keys)
@@ -375,7 +375,7 @@ class PokemonExplorer:
         # Check for black screen
         start_time = time.time()
         black_screen = False
-        while time.time() - start_time < 2:
+        while time.time() - start_time < 3:
             self.current_image = self.capture_screenshot()
             if self.is_black_or_white_screen(self.current_image):
                 black_screen = True
@@ -395,10 +395,12 @@ class PokemonExplorer:
         while True:
             # Use BFS to find the path to the nearest unexplored area
             path = self.bfs_search()
-            possible_directions = ["up", "down", "left", "right"]
             if not path:
-                print("No unexplored tiles found! Exploration complete.")
-                path.append((random.choice(possible_directions), 0))
+                print("No unexplored Tiles. reseting")
+                self.tile_maps = [tilemap.TileMap(800, 800)]  # Start with one tile map
+                self.current_tile_map_index = 0  # Index of the current tile map
+                self.warp_dict = {}
+                path = self.bfs_search()
 
             for direction, map_index in path:
                 # direction = input()
@@ -411,6 +413,12 @@ class PokemonExplorer:
                         break
 
                 new_position = self.tile_maps[self.current_tile_map_index].move(direction)
+                if (new_position[0] < 0 or new_position[0] >= 800 or new_position[1] < 0 or new_position[1] >= 800):
+                    self.tile_maps = [tilemap.TileMap(800, 800)]  # Start with one tile map
+                    self.current_tile_map_index = 0  # Index of the current tile map
+                    self.warp_dict = {}
+                    break
+
                 self.move_direction(direction)
 
                 self.current_image = self.capture_screenshot()

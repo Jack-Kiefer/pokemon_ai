@@ -6,7 +6,7 @@ import json
 class ImageLabeler:
     def __init__(self, folder_path):
         self.folder_path = folder_path
-        self.image_count = 2727  # Adjust if you have more or fewer pairs
+        self.image_count = 2932  # Adjust if you have more or fewer pairs
         self.labels = []
         self.load_existing_labels()  # Load existing labels if any
 
