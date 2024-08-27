@@ -294,6 +294,8 @@ class PokemonExplorer:
         self.spam_until_escape()
         self.tile_maps[self.current_tile_map_index].mark_grass()
         self.find_and_relocate_closest_tile()
+        self.prev_image = self.capture_screenshot()
+        self.tile_maps[self.current_tile_map_index].print_map()
 
     def warp(self, hit_wall):
         print("Warp confirmed by menu detection.")

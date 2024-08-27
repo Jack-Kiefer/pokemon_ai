@@ -94,8 +94,8 @@ class TileMap:
         x, y = self.current_position
 
         # Define the boundaries of the 40x40 area around the player
-        min_x = max(x - 50, 0)
-        max_x = min(x + 50, self.width - 1)
+        min_x = max(x - 75, 0)
+        max_x = min(x + 75, self.width - 1)
         min_y = max(y - 15, 0)
         max_y = min(y + 15, self.height - 1)
 

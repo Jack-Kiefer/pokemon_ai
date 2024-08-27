@@ -55,7 +55,7 @@ def create_model(input_shape, num_classes):
 
 def train_model(images, labels, num_classes):
     model = create_model(images[0].shape, num_classes)
-    model.fit(images, labels, epochs=5, validation_split=0.2)
+    model.fit(images, labels, epochs=20, validation_split=0.6)
     model.save('movement_detection_model.h5')
 
 def main():
