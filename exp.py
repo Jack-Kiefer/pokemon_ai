@@ -99,7 +99,7 @@ class PokemonExplorer:
         screenshot_array = np.array(grayscale_screenshot)
         return screenshot_array
 
-    def is_black_or_white_screen(self, image, threshold=10):
+    def is_black_or_white_screen(self, image, threshold=5):
         return np.mean(image) < threshold or np.mean(image) > 255 - threshold
 
     def save_screenshot(self, image, description):
@@ -231,6 +231,7 @@ class PokemonExplorer:
 
             # Get neighbors and explore
             neighbors = list(self.neighbors().items())
+            random.shuffle(neighbors)
 
             for direction, (dx, dy) in neighbors:
                 neighbor_pos = (current_pos[0] + dx, current_pos[1] + dy)

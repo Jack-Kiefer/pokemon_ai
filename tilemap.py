@@ -61,7 +61,7 @@ class TileMap:
         self.update_bounds(position)
 
     def mark_grass(self):
-        self.map[self.current_position].tile_type = 'G'
+        self.map[self.current_position].tile_type = '.'
         
 
     def mark_open(self, position, image_hash):
@@ -94,8 +94,8 @@ class TileMap:
         x, y = self.current_position
 
         # Define the boundaries of the 40x40 area around the player
-        min_x = max(x - 75, 0)
-        max_x = min(x + 75, self.width - 1)
+        min_x = max(x - 15, 0)
+        max_x = min(x + 15, self.width - 1)
         min_y = max(y - 15, 0)
         max_y = min(y + 15, self.height - 1)
 
