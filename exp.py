@@ -5,12 +5,12 @@ import time
 import pydirectinput
 import keyboard
 import cv2
-import tilemap  # Assuming you have a tilemap module
+import tilemap
 from collections import deque
 import random
 import imagehash
 from heapq import heappop, heappush
-from menu_checker import MenuDetector  # Assuming you have MenuDetector in a separate file named 'menu_detector.py'
+from menu_checker import MenuDetector
 from movement_detector import detect_movement
 import signal
 import json
